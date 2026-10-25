@@ -1,0 +1,24 @@
+{
+  "name": "omnigami-android-style-logo-reveal",
+  "displayName": "Android Style Logo Reveal",
+  "version": "1.0.0",
+  "description": "Make a 15.5-second logo reveal for a product, in code, in the grammar of Android's 2019 brand film (an independent style study) - the product's own mark constructed from its own geometry (grid lines on its edges, compass circles from its arcs, anchors) while four short benefit lines land beside it, the mark filling in the order its idea gives, a push into the mark until its colour is the frame, the first word of the product's line landing alone, a wipe in one of the mark's own shapes carrying it into the line, a disc stretching into the product's own input or button, the press blooming into the frame, and a pull back out onto the lockup. Renders a wide (16:9) MP4 with music. Use when the user asks for a logo reveal, logo animation, brand opener, intro, mark animation or an Android-style logo reveal for their product.",
+  "author": {
+    "name": "omnigami",
+    "url": "https://omnigami.ai"
+  },
+  "homepage": "https://omnigami.ai/skills/android-style-logo-reveal",
+  "repository": "https://github.com/omnigami-ai/android-style-logo-reveal",
+  "documentationUrl": "https://github.com/omnigami-ai/android-style-logo-reveal#readme",
+  "supportUrl": "https://omnigami.ai/#questions",
+  "privacyPolicyUrl": "https://omnigami.ai/legal/privacy",
+  "termsOfServiceUrl": "https://omnigami.ai/legal/terms",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "keywords": [
+    "video",
+    "launch video",
+    "product video",
+    "motion graphics",
+    "omnigami"
+  ]
+}

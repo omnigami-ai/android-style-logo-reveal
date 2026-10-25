@@ -1,0 +1,725 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ostlery · Logo reveal</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #F7F4EE; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
+</style>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script src="kit.js"></script>
+<script>
+// Android Style Logo Reveal: the reference film, for Ostlery (STORY.md). Style inspired by Android's video "The next
+// evolution of Android" (2019, https://www.youtube.com/watch?v=l2UDgpLz20M): an independent style study, not affiliated
+// with or endorsed by Google, and none of its assets. The grammar (the mark constructed from its own geometry, a push
+// into the mark until its colour is the frame, a word carried across a designed wipe, a disc stretching into a pill, a
+// zoom out to the lockup) is studied from it; the content is Ostlery's: its mark copied exactly from its mark.svg, four
+// benefit lines in its voice, its composer and send button, its line. Ostlery is a fictional company made for
+// omnigami's examples.
+// Sections are labelled KEEP (the machinery: easing, timing, the camera, the transitions) and ADAPT (the brand's
+// tokens, its mark, the construction drawn from that mark, its lines, its input, its lockup). SKILL.md says how.
+// Deterministic: seek(t) paints from its arguments only, on a CPU canvas, ctx.reset() first.
+(() => {
+const { clamp, lerp, loadFont, fitText, capMiddle, centreText } = window.kit;
+const W = 1920, H = 1080, FPS = 30, BPM = 120, DURATION = 15.5;
+const canvas = document.getElementById('c');
+const g = canvas.getContext('2d', { willReadFrequently: true });
+
+// ADAPT: the brand's tokens (paper, card, ink, its colour and that colour pressed, a construction-line colour, a check colour)
+const C = { paper: '#F7F4EE', card: '#FFFFFF', ink: '#17191F', muted: '#5C616B', ember: '#C2482B', emberDown: '#A93B20', lake: '#2F62D9', ok: '#2E7A57' };
+// the line's field and its words (the reference: ink, paper). If the product's input or button is dark, take its ground
+// here instead (paper, ink) so the input shows on it
+const LINE = { field: C.ink, text: C.paper };
+const SERIF = (s, w = 500) => `${w} ${s}px Newsreader`;
+const SANS = (s, w = 500) => `${w} ${s}px Figtree`;
+
+// ADAPT: the mark's paths, copied exactly from its SVG (Ostlery's mark.svg: the outer arch, the inner arch, the
+// doorway). The film works in a 100-unit box with the mark centred on (50, 50) and its longer side running 8 → 92.
+// Ostlery's SVG is drawn in that box already; for another, set MARK_FIT to the matrix that puts it there,
+// [s, 0, 0, s, tx, ty] with s = 84 / its longer side, tx = 50 - s * its centre x, ty = 50 - s * its centre y. Every
+// other mark number in the film (the grid, the circles, the fills, DOOR, BOX) is in the box's units.
+const MARK_D = ['M8 92V50a42 42 0 0 1 84 0v42h-8V50a34 34 0 0 0-68 0v42z', 'M24 92V50a26 26 0 0 1 52 0v42h-8V50a18 18 0 0 0-36 0v42z', 'M40 92V50a10 10 0 0 1 20 0v42z'];
+const MARK_FIT = null;
+const inBox = (d) => { if (!MARK_FIT) return new Path2D(d); const p = new Path2D(); p.addPath(new Path2D(d), new DOMMatrix(MARK_FIT)); return p; };
+const MARK = MARK_D.map(inBox);
+const BOX = { x0: 8, y0: 8, x1: 92, y1: 92 }; // the mark's bounds in the box (a wide mark: y0 and y1 move in)
+// each arch's centreline, in the box's units (for filling it along its own path, left foot over the top to the right foot)
+const SPINE = [{ p: new Path2D('M12 92V50A38 38 0 0 1 88 50V92'), len: 84 + Math.PI * 38 }, { p: new Path2D('M28 92V50A22 22 0 0 1 72 50V92'), len: 84 + Math.PI * 22 }];
+// ADAPT: the app's own icons (Ostlery's app), copied exactly in their own box (ICON_BOX units: 24 here;
+// set the product's, 16 or 20): the send arrow and the check
+const ICON_BOX = 24;
+const ICON_UP = new Path2D('M12 19V5M6 11l6-6 6 6');
+const ICON_CHECK = new Path2D('M5 12.5l4.5 4.5L19 7.5');
+
+// ============================== KEEP: easing ==============================
+const r = (t, a, d) => clamp((t - a) / d);
+const out3 = (p) => 1 - (1 - clamp(p)) ** 3;
+const out5 = (p) => 1 - (1 - clamp(p)) ** 5;
+const settle = (p) => kit.motion.settle(clamp(p), 1);
+const easeIn = (p) => clamp(p) ** 2.4;
+// a CSS-style cubic bezier (x1, y1, x2, y2), solved by bisection: pure, the same answer every frame
+function bezier(x1, y1, x2, y2) {
+  const at = (s, a, b) => 3 * (1 - s) * (1 - s) * s * a + 3 * (1 - s) * s * s * b + s * s * s;
+  return (p) => {
+    p = clamp(p);
+    if (p <= 0 || p >= 1) return p;
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 32; i++) { const m = (lo + hi) / 2; if (at(m, x1, x2) < p) lo = m; else hi = m; }
+    return at((lo + hi) / 2, y1, y2);
+  };
+}
+// every move that starts from rest eases in, so nothing leaves at full speed (the founder, 2026-10-25)
+const DRAW = bezier(0.6, 0, 0.3, 1);   // a fade or a dim: in and out
+const STROKE = bezier(0.85, 0, 0.25, 1); // the blue strokes and the ember fills: a long, slow start, then quick (the founder, 2026-10-25)
+const MOVE = bezier(0.45, 0, 0.15, 1); // a move: a gentle start, then a long soft settle
+const WIPE = bezier(0.7, 0, 0.2, 1);   // the ink doorway rising over the ember field at the cut
+const BLOOM = kit.motion.inOut;        // the send disc growing into the field: log space, at most ~1.28x a frame
+
+// ============================== KEEP: the timeline (s; 120 BPM, a beat 0.5 s) ==============================
+// change a time only with its neighbours (style.md, "The timeline"); the song lands on T.pullEnd (render --land)
+const T = {
+  grid: 0.1,
+  circles: [0.75, 1.5, 2.25, 3.0, 3.75], drawDur: 0.65,
+  lines: [0.75, 2.0, 3.25, 4.5], // the last as the doorway lights
+  door: 4.5, doorDur: 0.6, bands: [4.92, 4.8], bandDur: [0.75, 0.7], // the arches start while the door still fills
+  consOut: 5.85, glide: 6.0, glideEnd: 6.8,
+  push: 7.5, plan: 8.0, wipe: 8.78, wipeDur: 0.55, cut: 9.0, words: 0.25,
+  corners: 9.5, rise: 10.5, disc: 10.55, stretch: 10.72, type: 11.1, perChar: 0.045,
+  press: 12.25, iris: 12.35, irisEnd: 13.1, pullEnd: 14.0, word: 13.95, end: DURATION,
+};
+// ADAPT: what the product does for you (Ostlery's brand guide: it looks so you don't, shows its working, finds the few that fit
+// and books one), each with the app's check, while the circles close in; the booking lands as the doorway lights (the
+// way in at the end of the trip). The founder, 2026-10-25: the app's benefits, never the sample search's filters or
+// stays. Four lines, so each holds long enough to read (~1.2 s)
+// ADAPT: the construction's primitives, from the mark's own geometry (box units), drawn in this order, one at each of
+// T.circles, each by a moving point with an anchor where it starts and one partway round, older ones dimming:
+//   a circle, from one of the mark's arcs: { x, y, r } (it starts at its right spring point, up over the top);
+//   any other outline: { path, half }: SVG path data in the box's units, starting where the point should start (a
+//   rounded bar, a square's diagonal, a letter's stem), and the share of its length where its second anchor lands.
+// Each may give dim: [x, y], where the dimension line starts (a circle's right spring point unless set; keep it on the
+// centre axis, y 50, so the line runs level). Ostlery: its five arcs, all concentric about the mark's centre
+const PRIMS = [42, 34, 26, 18, 10].map((rad) => ({ x: 50, y: 50, r: rad }));
+const PRIM = PRIMS.map((c) => {
+  if (!c.path) return { ...c, dim: c.dim || [c.x + c.r, c.y] };
+  // an outline's length and its points along the way, from the browser's own SVG geometry (pure, the same every frame)
+  const ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg'), el = document.createElementNS(ns, 'path');
+  svg.setAttribute('style', 'position:absolute;width:0;height:0;overflow:hidden;visibility:hidden');
+  el.setAttribute('d', c.path); svg.appendChild(el); document.body.appendChild(svg);
+  const len = el.getTotalLength(), at = (p) => { const q = el.getPointAtLength(clamp(p) * len); return [q.x, q.y]; };
+  return { ...c, p2d: new Path2D(c.path), len, at, half: c.half ?? 0.5, dim: c.dim || at(0) };
+});
+const LINES = [
+  { at: T.lines[0], label: 'Reads every listing' },
+  { at: T.lines[1], label: 'Shows every check' },
+  { at: T.lines[2], label: 'Finds the one that fits' },
+  { at: T.lines[3], label: 'Books it for you' },
+];
+
+// ============================== the mark's place (KEEP the sizes; ADAPT DOOR to the mark) ==============================
+const U0 = 8.6;                       // construction: 8.6 px a mark unit (the mark 722 px tall)
+const OY0 = H / 2 - 50 * U0;          // the mark's centre (50, 50) on the frame's middle line
+const OX_A = 600 - 50 * U0, OX_B = W / 2 - 50 * U0; // left of centre beside the counter, then centred
+const DOOR = [50, 72];                // ADAPT: the point inside the mark the camera pushes into and pulls out of: the middle
+                                      // of a solid part of the mark at least 19.2 × 10.8 units (the frame at UP2)
+const UP = 110;                       // a mark unit when the doorway fills the frame (the push)
+const UP2 = 100;                      // and where the pull back out of it starts (the doorway just fills the frame)
+// KEEP: the lockup, bold and baseline-aligned (the founder, 2026-10-25): the wordmark 1.26x the mark's height
+// (Ostlery's: Newsreader 600, no tracking), its baseline on the mark's foot, a tight gap; the mark sits a touch above
+// the middle line to balance the descender
+const LOCK = { mark: 150, foot: 0 };  // the mark's drawn height, px; foot: box units the baseline sits above the mark's
+                                      // lowest point (0 for a flat foot; a round one overshoots, about 1.5)
+// ADAPT: the wordmark, set in its own face (WORD_FONT, its tracking WORD_TRACK in em), or drawn exactly from the brand's
+// outlined wordmark: WORDMARK = { d, em, x0, x1 } (its path data in font units, the baseline at y 0; its units per em;
+// its ink's left and right x). LOCK.silhouette: the mark's outer outline (SVG path data in the mark's own units, holes
+// filled) for a mark whose right edge isn't straight, so the word slides out from behind that edge; LOCK.from: the box
+// x where the word's right end starts, hidden behind the mark (the right edge unless set; a round mark, about 79)
+const WORD_FONT = (s) => SERIF(s, 600), WORD_TRACK = 0, WORDMARK = null;
+const SIL = LOCK.silhouette ? inBox(LOCK.silhouette) : null;
+const KT = 108 * 84 / 92;             // the ratios' basis: a mark 98.6 px tall takes a 124 px word and a 26 px gap
+let M = null;                         // lockup metrics, measured in prepare()
+
+function markOrigin(t) {
+  // construction → glide to centre → push into the doorway
+  if (t < T.push) {
+    const x = lerp(OX_A, OX_B, MOVE(r(t, T.glide, T.glideEnd - T.glide)));
+    return { ox: x, oy: OY0, u: U0 };
+  }
+  // the doorway fills the frame on the last frame before the cut (the cut lands on one colour, as the reference's does)
+  const p = easeIn(r(t, T.push, T.plan - 1 / FPS - T.push));
+  const u = U0 * Math.exp(Math.log(UP / U0) * p);
+  const sx = W / 2, sy = lerp(OY0 + DOOR[1] * U0, H / 2, p);
+  return { ox: sx - DOOR[0] * u, oy: sy - DOOR[1] * u, u };
+}
+const S = (o, x, y) => [o.ox + x * o.u, o.oy + y * o.u];
+
+// ============================== KEEP: drawing helpers ==============================
+function field(colour) { g.fillStyle = colour; g.fillRect(0, 0, W, H); }
+function drawMark(o, alpha = 1, parts = [0, 1, 2]) {
+  g.save(); g.globalAlpha *= alpha; g.translate(o.ox, o.oy); g.scale(o.u, o.u); g.fillStyle = C.ember;
+  for (const i of parts) g.fill(MARK[i], 'evenodd');
+  g.restore();
+}
+function line(x0, y0, x1, y1, colour, width, alpha) {
+  if (alpha <= 0) return;
+  g.save(); g.globalAlpha *= alpha; g.strokeStyle = colour; g.lineWidth = width; g.lineCap = 'round';
+  g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke(); g.restore();
+}
+function dot(x, y, rad, colour, alpha = 1) {
+  if (alpha <= 0 || rad <= 0) return;
+  g.save(); g.globalAlpha *= alpha; g.fillStyle = colour; g.beginPath(); g.arc(x, y, rad, 0, 2 * Math.PI); g.fill(); g.restore();
+}
+function ring(x, y, rad, colour, width, fill, alpha = 1) {
+  if (alpha <= 0 || rad <= 0) return;
+  g.save(); g.globalAlpha *= alpha; g.beginPath(); g.arc(x, y, rad, 0, 2 * Math.PI);
+  g.fillStyle = fill; g.fill(); g.strokeStyle = colour; g.lineWidth = width; g.stroke(); g.restore();
+}
+function icon(path, x, y, size, colour, stroke) { // an app icon (ICON_BOX units) centred on x, y; stroke in px
+  g.save(); g.translate(x - size / 2, y - size / 2); g.scale(size / ICON_BOX, size / ICON_BOX);
+  g.strokeStyle = colour; g.lineWidth = stroke * ICON_BOX / size; g.lineCap = 'round'; g.lineJoin = 'round'; g.stroke(path); g.restore();
+}
+function pill(x, y, w, h, colour, rad = h / 2) { kit.roundRect(g, x, y, w, h, rad); g.fillStyle = colour; g.fill(); }
+// a key word closed before its punctuation ("Get *paid*.") reads as "Get *paid.*", so no asterisk is ever shown
+const emph = (text) => String(text || '').replace(/\*([.,;:!?…]+)(?=\s|$)/g, '$1*');
+
+// ============================== act 1: construction (0–7.5 s) ==============================
+// ADAPT: the grid, every line an edge of the mark's own paths (x of each vertical edge, y of each horizontal edge,
+// the arcs' tangents and the centre axes); KEEP how it grows
+const GRID_X = [8, 16, 24, 32, 40, 50, 60, 68, 76, 84, 92];
+const GRID_Y = [8, 16, 24, 32, 40, 50, 92];
+const GRID = [
+  ...GRID_X.map((x) => ({ v: true, at: x, d: Math.abs(x - 50) })),
+  ...GRID_Y.map((y) => ({ v: false, at: y, d: Math.abs(y - 50) })),
+].sort((a, b) => a.d - b.d).map((l, i) => ({ ...l, t0: T.grid + i * 0.03 }));
+
+function construction(t, o, fade) {
+  if (fade <= 0) return;
+  // grid lines grow out from the springline and the centre axis
+  for (const l of GRID) {
+    const p = STROKE(r(t, l.t0, 0.8));
+    if (p <= 0) continue;
+    const axis = l.at === 50;
+    const a = (axis ? 0.55 : 0.32) * fade;
+    if (l.v) { const [x, y0] = S(o, l.at, lerp(50, 0, p)); const [, y1] = S(o, l.at, lerp(50, 100, p)); line(x, y0, x, y1, C.lake, 1.5, a); }
+    else { const [x0, y] = S(o, lerp(50, -4, p), l.at); const [x1] = S(o, lerp(50, 104, p), l.at); line(x0, y, x1, y, C.lake, 1.5, a); }
+  }
+  // the primitives: a compass circle drawn from its spring point up over the top and round, any other outline from its
+  // start; each older one dims
+  PRIM.forEach((c, i) => {
+    const at = T.circles[i], p = STROKE(r(t, at, T.drawDur));
+    if (p <= 0) return;
+    const next = T.circles[i + 1] ?? T.door;
+    const dim = lerp(1, 0.45, DRAW(r(t, next, 0.4)));
+    if (c.path) {
+      g.save(); g.globalAlpha = fade * dim; g.translate(o.ox, o.oy); g.scale(o.u, o.u); g.strokeStyle = C.lake; g.lineWidth = 2.5 / o.u;
+      g.lineCap = 'round'; g.lineJoin = 'round'; g.setLineDash([c.len * p, c.len * 2]); g.stroke(c.p2d); g.restore();
+      const [mx, my] = S(o, ...c.at(p));
+      dot(mx, my, 5, C.lake, fade * (1 - r(p, 0.85, 0.15)));
+      const aR = MOVE(r(t, at, 0.3)), aL = MOVE(r(p, c.half, 0.2));
+      ring(...S(o, ...c.at(0)), 6.5 * aR, C.lake, 2.5, C.paper, fade * dim);
+      ring(...S(o, ...c.at(c.half)), 6.5 * aL, C.lake, 2.5, C.paper, fade * dim);
+      return;
+    }
+    const [cx, cy] = S(o, c.x, c.y);
+    const R = c.r * o.u;
+    g.save(); g.globalAlpha = fade * dim; g.strokeStyle = C.lake; g.lineWidth = 2.5; g.lineCap = 'round';
+    g.beginPath(); g.arc(cx, cy, R, 0, -2 * Math.PI * p, true); g.stroke(); g.restore();
+    // the moving point, gone as the circle closes
+    const ang = -2 * Math.PI * p;
+    dot(cx + R * Math.cos(ang), cy + R * Math.sin(ang), 5, C.lake, fade * (1 - r(p, 0.85, 0.15)));
+    // anchors on the springline: the right one as the circle starts, the left one as the point passes it
+    const aR = MOVE(r(t, at, 0.3)), aL = MOVE(r(p, 0.5, 0.2));
+    ring(cx + R, cy, 6.5 * aR, C.lake, 2.5, C.paper, fade * dim);
+    ring(cx - R, cy, 6.5 * aL, C.lake, 2.5, C.paper, fade * dim);
+  });
+}
+
+// KEEP: the dimension line from the newest circle's spring point to the line beside it
+const COUNT_X = 1110;
+function dimension(t, o, fade) {
+  const grow = STROKE(r(t, T.circles[0], 0.6));
+  if (grow <= 0 || fade <= 0) return;
+  // it starts at the newest primitive's dim point (a circle's right spring point), gliding there as each one starts
+  let [ax, ay] = PRIM[0].dim;
+  for (let i = 1; i < PRIM.length; i++) { const k = MOVE(r(t, T.circles[i], 0.5)); ax = lerp(ax, PRIM[i].dim[0], k); ay = lerp(ay, PRIM[i].dim[1], k); }
+  const [x0, y] = S(o, ax, ay);
+  const x1 = COUNT_X - 34, y1 = H / 2; // and ends level with the line it points to
+  line(x0 + 9, y, lerp(x0 + 9, x1, grow), lerp(y, y1, grow), C.lake, 2, 0.75 * fade);
+  dot(lerp(x0 + 9, x1, grow), lerp(y, y1, grow), 4, C.lake, 0.75 * fade);
+}
+
+// the lines: one at a time, on the dimension line (each lifts away before the next rises in)
+const LINE_MAX = 64; // px, set smaller if the longest line won't fit between the dimension line and the frame's edge
+function lineSize() {
+  g.save(); g.font = SANS(100, 600);
+  const widest = Math.max(...LINES.map((l) => g.measureText(l.label).width));
+  g.restore();
+  return Math.min(LINE_MAX, 100 * (W - 90 - COUNT_X - 70) / widest);
+}
+function counter(t, fade, dx) {
+  if (fade <= 0) return;
+  const cy = H / 2, fs = lineSize();
+  // each line leaves (fading as it lifts) before the next arrives (rising into place): never two at once, never cropped
+  const pos = (i) => {
+    const c = LINES[i], next = LINES[i + 1];
+    const a = c.at + 0.1, b = next ? next.at : Infinity;
+    const inA = r(t, a, 0.2), outA = 1 - r(t, b, 0.12);
+    return { on: t >= a && t < b + 0.12, alpha: Math.min(inA, outA), y: 30 * (1 - out5(r(t, a, 0.45))) - 18 * out3(r(t, b, 0.12)) };
+  };
+  g.save(); g.translate(dx, 0);
+  LINES.forEach((c, i) => {
+    const q = pos(i);
+    if (!q.on) return;
+    g.globalAlpha = fade * q.alpha;
+    const y = cy + q.y;
+    icon(ICON_CHECK, COUNT_X + fs * 0.42, y, fs * 0.84, C.ok, fs * 0.07);
+    g.font = SANS(fs, 600); g.fillStyle = C.ink; centreText(g, c.label, COUNT_X + fs * 1.1, y);
+  });
+  g.restore();
+}
+
+// ADAPT: the fill, in the order the mark's own idea gives, each step on STROKE within its part of the mark: 'rise' fills
+// it from its foot up (a band from x0 to x1, foot to top), 'along' fills a band along its centreline ('spine', the
+// band's width), 'grow' fills it outward from a point (cx, cy, out to r). Ostlery: the doorway lights from its threshold
+// (the one best fit), then the outer and inner arches fill along their own paths, starting while the door still fills
+const FILLS = [
+  { part: 2, how: 'rise', x0: 38, x1: 62, foot: 92, top: 38, at: T.door, dur: T.doorDur },
+  { part: 0, how: 'along', spine: SPINE[0], width: 10, at: T.bands[0], dur: T.bandDur[0] },
+  { part: 1, how: 'along', spine: SPINE[1], width: 10, at: T.bands[1], dur: T.bandDur[1] },
+];
+function fills(t, o) {
+  for (const f of FILLS) {
+    const p = STROKE(r(t, f.at, f.dur));
+    if (p <= 0) continue;
+    g.save(); g.translate(o.ox, o.oy); g.scale(o.u, o.u); g.fillStyle = C.ember;
+    // a band drawn along its spine leaves its square ends short of the part's corners: fill the part whole when done
+    if (p >= 1 && f.how !== 'rise') { g.fill(MARK[f.part], 'evenodd'); g.restore(); continue; }
+    g.clip(MARK[f.part], 'evenodd');
+    if (f.how === 'rise') g.fillRect(f.x0, f.foot - (f.foot - f.top) * p, f.x1 - f.x0, (f.foot - f.top) * p + 1);
+    else if (f.how === 'along') { g.strokeStyle = C.ember; g.lineWidth = f.width; g.lineCap = 'butt'; g.setLineDash([f.spine.len * p, f.spine.len * 2]); g.stroke(f.spine.p); }
+    else if (f.how === 'grow') { g.beginPath(); g.arc(f.cx, f.cy, Math.max(0, f.r * p), 0, 2 * Math.PI); g.fill(); }
+    g.restore();
+  }
+}
+
+function actConstruct(t) {
+  field(C.paper);
+  const o = markOrigin(t);
+  const fade = 1 - out3(r(t, T.consOut, 0.4));
+  construction(t, o, fade);
+  dimension(t, o, fade);
+  fills(t, o);
+  const cf = 1 - r(t, T.consOut, 0.2); // gone before the gliding mark's right edge reaches it
+  counter(t, cf, 30 * out3(r(t, T.consOut, 0.35)));
+}
+
+function actPush(t) {
+  field(C.paper);
+  drawMark(markOrigin(t));
+}
+
+// ============================== act 2: the line (8.0–12.35 s) ==============================
+// KEEP the moves; ADAPT the wipe's shape and the corner shapes to the mark's own shapes, and the input to the product's
+function words(values) {
+  const line = emph(values.line1);
+  const big = kit.parseEmphasis(line)[0] || { text: '', em: false };
+  const lay = fitText(g, { text: line, fontFor: (s) => SERIF(s), maxWidth: 880, maxLines: 2, maxSize: 150, minSize: 64, lineHeight: 1.08, balance: true });
+  return { big, lay };
+}
+const CAP_SERIF = () => kit.capRatio(g, (s) => SERIF(s));
+function bigSize(text) { return Math.min(400, kit.sizeToWidth(g, text, (s) => SERIF(s), 1500)); }
+
+// where each word of the statement sits (centre of its capitals), with the block centred on cy
+function statementSlots(lay, cy) {
+  const slots = [];
+  const n = lay.lines.length, cap = CAP_SERIF() * lay.size;
+  lay.lines.forEach((ln, li) => {
+    const lineCy = cy + (li - (n - 1) / 2) * lay.lineHeight;
+    const left = W / 2 - ln.width / 2;
+    for (const w of ln.words) slots.push({ ...w, x: left + w.x, base: lineCy + cap / 2 });
+  });
+  return slots;
+}
+function drawWordAt(text, size, cx, capCy, colour, alpha = 1) {
+  g.save(); g.globalAlpha *= alpha; g.font = SERIF(100); g.fillStyle = colour; g.textAlign = 'center';
+  g.translate(cx, capCy); g.scale(size / 100, size / 100); centreText(g, text, 0, 0); g.restore();
+}
+
+function actPlan(t, values, word = true) {
+  field(C.ember);
+  if (!word) return;
+  const { big } = words(values);
+  const s = lerp(1.12, 1, out5(r(t, T.plan, 0.45)));
+  drawWordAt(big.text, bigSize(big.text) * s, W / 2, H / 2, C.paper);
+}
+
+// from ember to ink: an ink doorway rises over the ember field, its arch wider than the frame, and the next scene
+// is inside it (the founder, 2026-10-25: no hard cut); "Plan" rides over both, so it carries across unbroken
+function archWipe(t, keep = false) { // keep: add to the current path (to clip outside it)
+  const p = WIPE(r(t, T.wipe, T.wipeDur)), R = 0.62 * W;
+  // it ends just as the arch clears the top corners (hypot(960, 700) < R), so its settle happens on screen
+  const cy = lerp(H + R + 10, 700, p);
+  if (!keep) g.beginPath();
+  g.moveTo(W / 2 - R, H + 20); g.lineTo(W / 2 - R, cy); g.arc(W / 2, cy, R, Math.PI, 0); g.lineTo(W / 2 + R, H + 20); g.closePath();
+}
+function actWipe(t, values) {
+  actPlan(t, values, false);
+  if (LINE.text === C.paper) {
+    g.save(); archWipe(t); g.clip(); actLine(t, values, 'ground'); g.restore();
+    actLine(t, values, 'first');
+    return;
+  }
+  // a line field in another colour: the first word takes the line's colour inside the wipe and keeps the ground's
+  // outside it, so it never changes colour in one frame
+  g.save(); archWipe(t); g.clip(); actLine(t, values, 'ground'); actLine(t, values, 'first'); g.restore();
+  g.save(); g.beginPath(); g.rect(0, 0, W, H); archWipe(t, true); g.clip('evenodd'); actLine(t, values, 'first', C.paper); g.restore();
+}
+
+// the corner shapes: the mark's outer arch at the top right, a doorway's outline at the bottom left
+function corners(t) {
+  const a = out5(r(t, T.corners, 0.7));
+  if (a > 0) {
+    const u = 9, cx = 1830 + 420 * (1 - a), cy = 400 - 420 * (1 - a);
+    g.save(); g.translate(cx - 50 * u, cy - 50 * u); g.scale(u, u); g.fillStyle = C.ember; g.fill(MARK[0], 'evenodd'); g.restore();
+  }
+  const b = out5(r(t, T.corners + 0.12, 0.7));
+  if (b > 0) {
+    const x = 250, top = 700 + 520 * (1 - b), rad = 170;
+    g.save(); g.strokeStyle = LINE.text; g.lineWidth = 4; g.globalAlpha = 0.9;
+    g.beginPath(); g.moveTo(x - rad, H + 10); g.lineTo(x - rad, top + rad); g.arc(x, top + rad, rad, Math.PI, 0); g.lineTo(x + rad, H + 10); g.stroke(); g.restore();
+  }
+}
+
+// ADAPT: the product's own input, a real component of it, from its CSS (Ostlery's composer: white, fully rounded, the
+// ember send button with its up arrow). INPUT.kind 'field': a field with its own send button inside it, line2 typed
+// into it (the reference); 'button': the product's main button alone, line2 its own label, set in whole (no typing).
+// round: its corners' radius as a share of its height (0.5: fully rounded); BUTTON: the button's sizes at film scale
+const INPUT = { kind: 'field', round: 0.5 };
+const BUTTON = { h: 140, text: 56, weight: 600, pad: 64, icon: 46, gap: 22 };
+// the send (or the button): its fill; its pressed shade (the press must show: darker for a light or coloured button,
+// lighter for a dark one); its icon's colour; its corners' radius as a share of its size (0.5: a disc); and the bloom:
+// 'grow' (the send's own disc grows into the field: it must be a disc in the mark's colour) or 'spring' (a disc of the
+// mark's colour springs up from its centre as the press returns, then grows: any other button)
+const SEND = { fill: C.ember, down: C.emberDown, icon: C.card, round: 0.5, bloom: 'grow' };
+const COMP = { cy: 700, h: 164, padL: 64, padR: 26, send: 56, text: 66 };
+function composerGeom(t, values) {
+  // the words, with any *key word* kept for its colour
+  const parts = kit.parseEmphasis(emph(values.line2));
+  const typed = parts.map((w) => w.text).join(' ');
+  const em = []; let at = 0;
+  for (const w of parts) { for (let i = 0; i < w.text.length; i++) em[at + i] = w.em; at += w.text.length + 1; }
+  if (INPUT.kind === 'button') {
+    // the button: its icon and label at its own sizes, its width from them
+    g.font = SANS(100, BUTTON.weight);
+    const fs = Math.max(36, Math.min(BUTTON.text, 100 * (860 - 2 * BUTTON.pad - BUTTON.icon - BUTTON.gap) / Math.max(1, g.measureText(typed).width)));
+    g.font = SANS(fs, BUTTON.weight);
+    const tw = g.measureText(typed).width, full = 2 * BUTTON.pad + BUTTON.icon + BUTTON.gap + tw;
+    const disc = out5(r(t, T.disc, 0.32)), stretch = MOVE(r(t, T.stretch, 0.55)), h = BUTTON.h * disc, w = lerp(h, full, stretch);
+    return { typed, em, tw, fs, full, w, h, x: W / 2 - w / 2, y: COMP.cy - h / 2, stretch, rad: lerp(h / 2, h * INPUT.round, stretch) };
+  }
+  // the composer stays clear of the corner arch (at most 880 wide); long words set smaller to fit it
+  const room = 940 - (COMP.padL + 36 + 2 * COMP.send + COMP.padR);
+  g.font = SANS(100, 500);
+  const fs = Math.max(36, Math.min(COMP.text, 100 * room / Math.max(1, g.measureText(typed).width)));
+  g.font = SANS(fs, 500);
+  const tw = Math.min(room, g.measureText(typed).width);
+  const full = Math.max(560, COMP.padL + tw + 36 + 2 * COMP.send + COMP.padR);
+  const disc = out5(r(t, T.disc, 0.32));
+  // the stretch starts as the disc settles, so the two read as one move
+  const stretch = MOVE(r(t, T.stretch, 0.55));
+  const h = COMP.h * disc;
+  const w = lerp(h, full, stretch);
+  return { typed, em, tw, fs, full, w, h, x: W / 2 - w / 2, y: COMP.cy - h / 2, stretch, rad: lerp(h / 2, h * INPUT.round, stretch) };
+}
+function sendState(t, low = 0.88) { // the press: it sinks (to 0.88 for a send button, 0.95 for a whole button) and shades
+  const dt = t - T.press;
+  let s = 1, dark = 0;
+  if (dt >= 0 && dt < 0.06) { s = lerp(1, low, out3(dt / 0.06)); dark = out3(dt / 0.06); }
+  else if (dt >= 0.06) { s = lerp(low, 1, settle((dt - 0.06) / 0.2)); dark = 1 - r(dt, 0.06, 0.2); }
+  return { s, dark };
+}
+function button(t, c) {
+  const st = sendState(t, 0.95), w = c.w * st.s, h = c.h * st.s, x = W / 2 - w / 2, y = COMP.cy - h / 2, rad = c.rad * st.s;
+  pill(x, y, w, h, st.dark > 0 ? mix(SEND.fill, SEND.down, st.dark) : SEND.fill, rad);
+  // its icon and label set in as it settles: one move, a fade and a short rise
+  const a = DRAW(r(t, T.type, 0.35));
+  if (a > 0) {
+    g.save(); kit.roundRect(g, x, y, w, h, rad); g.clip();
+    g.globalAlpha = a; g.translate(W / 2, COMP.cy + 12 * (1 - out5(r(t, T.type, 0.45)))); g.scale(st.s, st.s);
+    const left = -c.full / 2 + BUTTON.pad;
+    icon(ICON_UP, left + BUTTON.icon / 2, 0, BUTTON.icon, SEND.icon, BUTTON.icon * 0.075);
+    g.font = SANS(c.fs, BUTTON.weight); g.fillStyle = SEND.icon; g.textAlign = 'left'; centreText(g, c.typed, left + BUTTON.icon + BUTTON.gap, 0);
+    g.restore();
+  }
+  return { sx: W / 2, sy: COMP.cy, rad: h / 2 };
+}
+function composer(t, values) {
+  const c = composerGeom(t, values);
+  if (c.h <= 0) return null;
+  if (INPUT.kind === 'button') return button(t, c);
+  pill(c.x, c.y, c.w, c.h, C.card, c.rad);
+  // the send button rides in at the right end as the disc stretches
+  const sa = out5(r(t, T.stretch + 0.12, 0.38));
+  const sx = c.x + c.w - COMP.padR - COMP.send, sy = COMP.cy;
+  const st = sendState(t);
+  if (sa > 0) {
+    const k = sa * st.s, fill = st.dark > 0 ? mix(SEND.fill, SEND.down, st.dark) : SEND.fill;
+    if (SEND.round === 0.5) dot(sx, sy, COMP.send * k, fill);
+    else pill(sx - COMP.send * k, sy - COMP.send * k, 2 * COMP.send * k, 2 * COMP.send * k, fill, 2 * COMP.send * k * SEND.round);
+    icon(ICON_UP, sx, sy, 50 * k, SEND.icon, 3.2 * Math.min(1, k * 1.5));
+  }
+  // the words typed into it, with a caret
+  const n = Math.floor(clamp((t - T.type) / T.perChar, 0, c.typed.length));
+  const tx = c.x + COMP.padL;
+  g.save(); kit.roundRect(g, c.x, c.y, c.w, c.h, c.rad); g.clip();
+  g.font = SANS(c.fs, 500); g.fillStyle = C.ink; g.textAlign = 'left';
+  const shown = c.typed.slice(0, n);
+  // each run of the shown letters in its colour: ink, a key word in the mark's colour
+  for (let i = 0, x = tx; i < shown.length;) {
+    let j = i; while (j < shown.length && !!c.em[j] === !!c.em[i]) j++;
+    const run = shown.slice(i, j); g.fillStyle = c.em[i] ? C.ember : C.ink; centreText(g, run, x, COMP.cy);
+    x += g.measureText(run).width; i = j;
+  }
+  g.fillStyle = C.ink;
+  const capH = kit.capRatio(g, (s) => SANS(s, 500)) * c.fs;
+  // the caret stays lit from typing to the send (a caret's blink restarts with each key, and the line is sent within
+  // one blink), so it never blinks on for one frame just before the press; the send button's disc covers it
+  if (t >= T.type - 0.2 && c.stretch > 0.6) {
+    const cx = tx + (shown ? g.measureText(shown).width : 0) + 5;
+    g.fillStyle = C.ink; g.fillRect(cx, COMP.cy - capH * 0.72, 3.5, capH * 1.44);
+  }
+  g.restore();
+  return { sx, sy, rad: COMP.send * st.s };
+}
+function mix(a, b, p) {
+  const A = parseInt(a.slice(1), 16), B = parseInt(b.slice(1), 16);
+  const ch = (s) => Math.round(lerp((A >> s) & 255, (B >> s) & 255, p));
+  return `rgb(${ch(16)},${ch(8)},${ch(0)})`;
+}
+
+// A later word arrives on its beat, or once the shrinking first word has cleared its place if that's later (with a short
+// line, the next word's place is under the first word as it shrinks): the first time from T.cut at which the first
+// word's box sits clear of word i's (and the 26 px it rises from) by CLEAR × the line's size; pure, from the layout
+// before the line rises (null: no wait, each word on its beat alone, as the first Ostlery cut was made, its "a" fading
+// in over the last letter of "Plan")
+const CLEAR = 0.1;
+function clearOf(i, lay, big) {
+  if (CLEAR === null) return -Infinity;
+  const slots = statementSlots(lay, H / 2), w0 = slots[0], wi = slots[i], cap = CAP_SERIF() * lay.size, gap = CLEAR * lay.size;
+  const from = bigSize(big.text);
+  for (let f = Math.ceil(T.cut * FPS - 1e-9); f / FPS <= T.cut + 0.6; f++) {
+    const p = MOVE(r(f / FPS, T.cut, 0.6)), k = Math.exp(lerp(Math.log(from), Math.log(lay.size), p)) / lay.size;
+    const cx = lerp(W / 2, w0.x + w0.width / 2, p), cy = lerp(H / 2, w0.base - cap / 2, p);
+    const a = [cx - w0.width * k / 2, cy - cap * k / 2, cx + w0.width * k / 2, cy + cap * k / 2];
+    const b = [wi.x, wi.base - cap, wi.x + wi.width, wi.base + 26];
+    if (a[2] + gap <= b[0] || b[2] + gap <= a[0] || a[3] + gap <= b[1] || b[3] + gap <= a[1]) return f / FPS;
+  }
+  return T.cut + 0.6;
+}
+// when each word of the line arrives: on its beat, after the first word clears its place, and at least 0.15 s after the
+// word before it (so a delayed word never bunches up with the next)
+function arrivals(lay, big) {
+  const n = statementSlots(lay, H / 2).length, at = [T.cut];
+  for (let i = 1; i < n; i++) at.push(Math.max(T.cut + i * T.words, clearOf(i, lay, big), i > 1 ? at[i - 1] + 0.15 : -Infinity));
+  return at;
+}
+// the send's disc growing into the field: from the send's own radius ('grow'), or springing up from nothing ('spring')
+function bloomRad(t, send) {
+  const p = r(t, T.iris, T.irisEnd - T.iris);
+  const corner = Math.max(...[[0, 0], [W, 0], [0, H], [W, H]].map(([x, y]) => Math.hypot(x - send.sx, y - send.sy))) + 2;
+  const rad = send.rad * Math.exp(Math.log(corner / send.rad) * BLOOM(p));
+  return SEND.bloom === 'spring' ? out5(r(t, T.iris, 0.25)) * rad : rad;
+}
+
+// part: 'all'; 'ground' (all but the first word, for inside the wipe); 'first' (the first word alone, over the wipe)
+function actLine(t, values, part = 'all', firstColour) {
+  if (part !== 'first') { field(LINE.field); corners(t); }
+  const { big, lay } = words(values);
+  // it rises to sit above the composer, its last line's capitals 150 px over the composer's top
+  const risen = COMP.cy - COMP.h / 2 - 150 - (lay.lines.length - 1) * lay.lineHeight / 2 - CAP_SERIF() * lay.size / 2;
+  const cy = lerp(H / 2, risen, MOVE(r(t, T.rise, 0.6)));
+  const slots = statementSlots(lay, cy);
+  const cap = CAP_SERIF() * lay.size, when = arrivals(lay, big);
+  slots.forEach((w, i) => {
+    if ((part === 'first' && i > 0) || (part === 'ground' && i === 0)) return;
+    const colour = i === 0 && firstColour ? firstColour : w.em ? C.ember : LINE.text;
+    const wcx = w.x + w.width / 2, wcy = w.base - cap / 2;
+    if (i === 0) {
+      // the first word carries across the cut, shrinking from the ember card into its place
+      const p = MOVE(r(t, T.cut, 0.6));
+      const from = bigSize(big.text);
+      const size = Math.exp(lerp(Math.log(from), Math.log(lay.size), p));
+      drawWordAt(w.text, size, lerp(W / 2, wcx, p), lerp(H / 2, wcy, p), colour);
+      return;
+    }
+    const at = when[i];
+    const a = r(t, at, 0.2);
+    if (a <= 0) return;
+    drawWordAt(w.text, lay.size, wcx, wcy + 26 * (1 - out5(r(t, at, 0.45))), colour, a);
+  });
+  if (part === 'first') return;
+  const send = composer(t, values);
+  // the send button's disc grows into the next field
+  if (t >= T.iris && send) dot(send.sx, send.sy, bloomRad(t, send), C.ember);
+}
+
+// ============================== act 3: out through the door, the lockup (13.1–15.5 s) ==============================
+// KEEP the pull-out and the lockup's proportions; ADAPT the wordmark's face and weight
+function lockGeom() {
+  const h = LOCK.mark, u = h / (BOX.y1 - BOX.y0), mw = h * (BOX.x1 - BOX.x0) / (BOX.y1 - BOX.y0), gap = h * 26 / KT, total = mw + gap + M.ww;
+  const left = W / 2 - total / 2, top = H / 2 - 0.58 * h; // the mark's box centred 0.08 of its height above the middle
+  return { ox: left - BOX.x0 * u, oy: top - BOX.y0 * u, u, wordX: left + mw + gap, base: top + h - LOCK.foot * u };
+}
+function pullOrigin(t) {
+  // a pure zoom out about the one point that lands the doorway on the lockup's; log space, quadratic out
+  // (at most about 1.3x a frame), so the arches open quickly round the door and settle softly
+  const L = lockGeom();
+  const ox0 = W / 2 - DOOR[0] * UP2, oy0 = H / 2 - DOOR[1] * UP2;
+  const k = L.u / UP2;
+  const px = (L.ox - k * ox0) / (1 - k), py = (L.oy - k * oy0) / (1 - k);
+  const p = r(t, T.irisEnd, T.pullEnd - T.irisEnd), e = 1 - (1 - p) ** 2;
+  const u = UP2 * Math.exp(Math.log(L.u / UP2) * e), z = u / UP2;
+  return { ox: px + (ox0 - px) * z, oy: py + (oy0 - py) * z, u };
+}
+function actLockup(t, values) {
+  field(C.paper);
+  drawMark(t >= T.pullEnd ? lockGeom() : pullOrigin(t));
+  const L = lockGeom();
+  // the word slides out from behind the mark (clipped at the mark's right edge), one move with a soft landing
+  const p = out5(r(t, T.word, 0.75));
+  if (p > 0) {
+    const brand = String(values.brand || 'ostlery'), from = LOCK.from ?? BOX.x1;
+    const x = L.wordX - (L.wordX - L.ox - from * L.u + M.ww) * (1 - p);
+    g.save(); g.beginPath();
+    if (SIL) {
+      // right of the mark's centre, and outside its outline
+      g.rect(L.ox + 50 * L.u, 0, W, H); g.clip();
+      const out = new Path2D(); out.rect(0, 0, W, H); out.addPath(SIL, new DOMMatrix([L.u, 0, 0, L.u, L.ox, L.oy])); g.clip(out, 'evenodd');
+    } else { g.rect(L.ox + BOX.x1 * L.u + 4, 0, (L.wordX - L.ox) + M.ww + 40, H); g.clip(); }
+    g.fillStyle = C.ink;
+    if (M.path) { const k = M.size / WORDMARK.em; g.translate(x - WORDMARK.x0 * k, L.base); g.scale(k, k); g.fill(M.path); }
+    else {
+      g.font = WORD_FONT(M.size); g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+      if (WORD_TRACK) g.letterSpacing = `${WORD_TRACK * M.size}px`;
+      g.fillText(brand, x, L.base);
+    }
+    g.restore();
+  }
+}
+
+// ============================== prepare / seek (ADAPT the fonts and defaults) ==============================
+async function prepare(values = {}) {
+  await loadFont('Figtree', 'assets/fonts/figtree-variable.ttf', { weight: '300 900' });
+  await loadFont('Newsreader', 'assets/fonts/newsreader-variable.ttf', { weight: '200 800' });
+  await document.fonts.ready;
+  const size = LOCK.mark * 124 / KT;
+  if (WORDMARK) M = { size, ww: (WORDMARK.x1 - WORDMARK.x0) * size / WORDMARK.em, path: new Path2D(WORDMARK.d) };
+  else {
+    g.reset(); g.font = WORD_FONT(size);
+    if (WORD_TRACK) g.letterSpacing = `${WORD_TRACK * size}px`;
+    const m = g.measureText(String(values.brand || 'ostlery'));
+    M = { size, ww: m.width - WORD_TRACK * size }; // the ink's width: no tracking after the last letter
+  }
+  g.reset();
+}
+function seek(t, values = defaults()) {
+  g.reset();
+  t = clamp(t, 0, DURATION - 1e-6);
+  if (t < T.push) actConstruct(t);
+  else if (t < T.plan) actPush(t);
+  else if (t >= T.wipe && t < T.wipe + T.wipeDur) actWipe(t, values);
+  else if (t < T.cut) actPlan(t, values);
+  else if (t < T.irisEnd) actLine(t, values);
+  else actLockup(t, values);
+  return canvas;
+}
+const defaults = () => ({ size: '16:9', line1: 'Plan a *stay*', line2: 'in a sentence.', brand: 'ostlery' });
+
+// ============================== KEEP: the film's own checks ==============================
+// render.mjs --check runs these after its determinism check: the founder's measurable rules (critique.md). Keep them
+// when you adapt the film; if you replace a step (an input with no typing, say), change its check to match, never drop it.
+function selfChecks(values = defaults()) {
+  const res = [], add = (name, ok, detail) => res.push({ name, ok: !!ok, detail });
+  const first = (t) => Math.ceil(t * FPS - 1e-9); // the first frame at or after t
+  // each line beside the circles is read for at least a second (from arriving to leaving), and there are four at most
+  const held = LINES.map((l, i) => (LINES[i + 1] ? LINES[i + 1].at : T.consOut) - (l.at + 0.1));
+  add('benefit lines: four at most, each held at least 1 s', LINES.length <= 4 && held.every((h) => h >= 1 - 1e-9), `${LINES.length} lines, held ${held.map((h) => h.toFixed(2)).join(', ')} s`);
+  // the first word lands alone and holds a second before the wipe carries it into the line
+  add('the first word alone for at least 1 s', T.cut - T.plan >= 1 - 1e-9, `${(T.cut - T.plan).toFixed(2)} s`);
+  // the rest of the line is typed in full (or the button's label set in), then read, before the press
+  const c = composerGeom(T.iris, values);
+  const done = INPUT.kind === 'button' ? T.type + 0.35 : T.type + c.typed.length * T.perChar;
+  add('the typed words done at least 0.5 s before the press', T.press - done >= 0.5 - 1e-9, `done at ${done.toFixed(2)} s, press at ${T.press} s`);
+  // the first word lands in the ground's colour on the mark's field, so it is never the key word
+  const firstWord = kit.parseEmphasis(emph(values.line1))[0];
+  add('the first word is not the key word', !(firstWord && firstWord.em), firstWord ? `"${firstWord.text}"` : 'no line');
+  // the press shows (its pressed shade differs from the button), and the input stands out from the line's field
+  const lum = (hex) => { const k = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * k[0] + 0.7152 * k[1] + 0.0722 * k[2]; };
+  const contrast = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  add('the press shows: its pressed shade at least 1.2:1 from the button', contrast(SEND.fill, SEND.down) >= 1.2, `${contrast(SEND.fill, SEND.down).toFixed(2)}:1`);
+  const face = INPUT.kind === 'button' ? SEND.fill : C.card;
+  add('the input stands out from the line\'s field: at least 3:1', contrast(face, LINE.field) >= 3, `${contrast(face, LINE.field).toFixed(2)}:1`);
+  // the bloom (the send's disc growing into the field) and the pull back out: at most 1.35x a frame, measured on the
+  // drawn radius from the first frame the disc covers the send
+  const sendAt = (tt) => {
+    const k = composerGeom(tt, values), st = sendState(tt, INPUT.kind === 'button' ? 0.95 : 0.88);
+    return INPUT.kind === 'button' ? { sx: W / 2, sy: COMP.cy, rad: k.h * st.s / 2 } : { sx: k.x + k.w - COMP.padR - COMP.send, sy: COMP.cy, rad: COMP.send * st.s };
+  };
+  let bloom = 1, from = null;
+  for (let f = first(T.iris); f + 1 < first(T.irisEnd); f++) {
+    const sa = sendAt(f / FPS), a = bloomRad(f / FPS, sa), b = bloomRad((f + 1) / FPS, sendAt((f + 1) / FPS));
+    if (from === null && a >= sa.rad - 1e-6) from = f;
+    if (from !== null) bloom = Math.max(bloom, b / a);
+  }
+  add('the bloom at most 1.35x a frame', bloom <= 1.35 && from !== null && (from - first(T.iris)) / FPS <= 0.25, `${bloom.toFixed(3)}x a frame at most, from ${from === null ? 'never' : `${((from - first(T.iris)) / FPS).toFixed(2)} s after it starts`}`);
+  let pull = 1;
+  for (let f = first(T.irisEnd); f < first(T.pullEnd); f++) pull = Math.max(pull, pullOrigin(f / FPS).u / pullOrigin((f + 1) / FPS).u);
+  add('the pull back out at most 1.35x a frame', pull <= 1.35, `${pull.toFixed(3)}x a frame at most`);
+  // the lockup as the reference sets it: the wordmark about 1.26x the mark's height, a tight gap, inside the frame
+  const L = lockGeom(), ratio = M.size / LOCK.mark, gap = L.wordX - (L.ox + BOX.x1 * L.u);
+  add('the lockup: wordmark 1.2–1.32x the mark, gap 0.2–0.32x, baseline on the mark\'s foot, inside the frame',
+    ratio >= 1.2 && ratio <= 1.32 && gap / LOCK.mark >= 0.2 && gap / LOCK.mark <= 0.32 && Math.abs(L.base - (L.oy + (BOX.y1 - LOCK.foot) * L.u)) < 0.5 && L.ox + BOX.x0 * L.u >= 0.1 * W && L.wordX + M.ww <= 0.9 * W,
+    `word ${ratio.toFixed(3)}x, gap ${(gap / LOCK.mark).toFixed(3)}x, lockup ${Math.round(L.ox + BOX.x0 * L.u)}–${Math.round(L.wordX + M.ww)} px`);
+  // the frames themselves, small: the push lands on one colour, the pull starts on one, and no two frames in a row
+  // swap most of the frame from one field to another (a hard cut); every change of field is a designed wipe
+  const sw = 240, sh = 135, small = document.createElement('canvas');
+  small.width = sw; small.height = sh;
+  const s = small.getContext('2d', { willReadFrequently: true });
+  const grab = (f) => { seek(f / FPS, values); s.clearRect(0, 0, sw, sh); s.drawImage(canvas, 0, 0, sw, sh); return s.getImageData(0, 0, sw, sh).data; };
+  const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const offColour = (d, hex) => { const k = rgb(hex); let n = 0; for (let i = 0; i < d.length; i += 4) if (Math.abs(d[i] - k[0]) + Math.abs(d[i + 1] - k[1]) + Math.abs(d[i + 2] - k[2]) > 12) n++; return n / (sw * sh); };
+  const lastPush = offColour(grab(first(T.plan) - 1), C.ember), pullStart = offColour(grab(first(T.irisEnd)), C.ember);
+  add('the push lands on one colour (the frame before the first word is all the mark\'s colour)', lastPush === 0, `${(lastPush * 100).toFixed(2)}% of the frame off it`);
+  add('the pull back out starts on one colour', pullStart === 0, `${(pullStart * 100).toFixed(2)}% of the frame off it`);
+  // a field is one of the film's flat colours; a hard cut is one frame in which a field's share of the frame jumps by
+  // 40 points or more (a fast zoom moves pixels between fields but barely changes their shares)
+  const fields = [...new Set([C.paper, C.ember, LINE.field])].map(rgb);
+  const shares = (d) => fields.map((k) => { let n = 0; for (let i = 0; i < d.length; i += 4) if (Math.abs(d[i] - k[0]) + Math.abs(d[i + 1] - k[1]) + Math.abs(d[i + 2] - k[2]) <= 24) n++; return n / (sw * sh); });
+  let prev = null, worst = 0, at = 0;
+  for (let f = 0; f < Math.round(DURATION * FPS); f++) {
+    const sh2 = shares(grab(f));
+    if (prev) { const j = Math.max(...sh2.map((x, i) => Math.abs(x - prev[i]))); if (j > worst) { worst = j; at = f; } }
+    prev = sh2;
+  }
+  add('no hard cut: no field gains or loses 40% of the frame in one frame', worst < 0.4, `at most ${(worst * 100).toFixed(1)}%, frame ${at - 1} to ${at}`);
+  g.reset();
+  return res;
+}
+
+window.template = {
+  fps: FPS, duration: DURATION, sizes: { '16:9': [1920, 1080] }, width: W, height: H,
+  defaults, prepare, seek, T, selfChecks,
+  fields: [
+    { id: 'line1', type: 'text', label: 'The line (its first word lands alone)', maxLength: 28 },
+    { id: 'line2', type: 'text', label: 'The rest, typed into the composer', maxLength: 28 },
+  ],
+  cuts: [T.plan, T.cut, T.irisEnd],
+  keyTimes: [0.6, 1.2, 1.95, 2.7, 3.45, 4.2, 4.95, 5.4, 6.3, 7.2, 7.8, 8.4, 9.2, 9.9, 10.9, 11.5, 12.2, 12.6, 13.4, 14.6],
+  music: { bpm: BPM, style: 'synth', sections: [{ from: 0, to: 4, pad: 0.6, hats: 0.2, bass: 0.35 }, { from: 4, to: 7, kick: 0.8, clap: 0.45, hats: 0.5, bass: 0.75, pad: 0.6 }], ending: { at: T.pullEnd } },
+};
+const q = new URLSearchParams(location.search);
+if (window.parent === window && !q.has('render')) prepare(defaults()).then(() => {
+  if (q.has('t')) { seek(+q.get('t')); return; }
+  const t0 = performance.now(); const loop = () => { seek(((performance.now() - t0) / 1000) % DURATION); requestAnimationFrame(loop); }; loop();
+});
+})();
+</script>
