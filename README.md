@@ -2,7 +2,7 @@
 
 Your mark built from its own geometry, then your line, then your lockup.
 
-A 15.5-second logo reveal. Your mark is drawn from its own geometry, grid lines on its edges and compass circles on its arcs, while four short lines say what your product does for you. It fills, the camera pushes into it until its colour is the whole frame, your line lands a word at a time, the rest is typed into your own product’s input, and one press blooms back out to your lockup. Style inspired by Android’s video; an independent style study, not affiliated with or endorsed by Google.
+A logo reveal drawn from your mark’s own geometry, while four short lines say what your product does. The camera pushes into its colour, your line types into your own product, and one press blooms out to your lockup.
 
 Watch it play live, and change its words, at [omnigami.ai/skills/android-style-logo-reveal](https://omnigami.ai/skills/android-style-logo-reveal).
 

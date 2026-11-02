@@ -5,6 +5,8 @@ description: Make a 15.5-second logo reveal for a product, in code, in the gramm
 
 # Android Style Logo Reveal
 
+For Japanese, Korean or Chinese product pages, keep the copy in that language and set the film’s `lang` to the page’s `<html lang>`; bundled Noto faces and phrase breaks handle the text.
+
 A 15.5-second opener that builds the product's mark from its own geometry and ends on its lockup. Thin construction
 lines grow along the mark's real edges; compass circles are drawn from its real arcs, one every 0.75 s, while four
 short lines say what the product does for you; the mark fills, glides to centre and holds; the camera pushes into it
