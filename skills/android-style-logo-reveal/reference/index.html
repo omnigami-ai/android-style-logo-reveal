@@ -21,7 +21,12 @@
 // Deterministic: seek(t) paints from its arguments only, on a CPU canvas, ctx.reset() first.
 (() => {
 const { clamp, lerp, loadFont, fitText, capMiddle, centreText } = window.kit;
-const W = 1920, H = 1080, FPS = 30, BPM = 120, DURATION = 15.5;
+const FPS = 30, BPM = 120, DURATION = 15.5;
+// Two sizes: wide 1920 x 1080 and tall 1080 x 1920 (values.size; sizeTo() sets the geometry). Tall (2026-11-04, for
+// TikTok, Reels and Shorts): the mark builds above the frame's middle with each line centred under it, the dimension
+// line dropping to it from the circles' feet; then the same push, wipe, words, input and lockup, placed for the frame.
+const SIZES = { '16:9': [1920, 1080], '9:16': [1080, 1920] };
+let W = 1920, H = 1080, TALL = false, SIZE = null;
 const canvas = document.getElementById('c');
 const g = kit.textContext(canvas.getContext('2d', { willReadFrequently: true }));
 
@@ -116,9 +121,10 @@ const LINES = [
 ];
 
 // ============================== the mark's place (KEEP the sizes; ADAPT DOOR to the mark) ==============================
-const U0 = 8.6;                       // construction: 8.6 px a mark unit (the mark 722 px tall)
-const OY0 = H / 2 - 50 * U0;          // the mark's centre (50, 50) on the frame's middle line
-const OX_A = 600 - 50 * U0, OX_B = W / 2 - 50 * U0; // left of centre beside the counter, then centred
+let U0 = 8.6;                         // construction: 8.6 px a mark unit (the mark 722 px tall; tall 7.2, 605 px)
+let OY0, OY_B, OX_A, OX_B;            // wide: the mark's centre on the middle line, left of centre beside the counter,
+                                      // then centred; tall: centred, above the middle, then gliding down to it
+let LINE_Y = 0;                       // tall: the lines' centre, under the mark
 const DOOR = [50, 72];                // ADAPT: the point inside the mark the camera pushes into and pulls out of: the middle
                                       // of a solid part of the mark at least 19.2 × 10.8 units (the frame at UP2)
 const UP = 110;                       // a mark unit when the doorway fills the frame (the push)
@@ -141,13 +147,13 @@ let M = null;                         // lockup metrics, measured in prepare()
 function markOrigin(t) {
   // construction → glide to centre → push into the doorway
   if (t < T.push) {
-    const x = lerp(OX_A, OX_B, MOVE(r(t, T.glide, T.glideEnd - T.glide)));
-    return { ox: x, oy: OY0, u: U0 };
+    const k = MOVE(r(t, T.glide, T.glideEnd - T.glide));
+    return { ox: lerp(OX_A, OX_B, k), oy: lerp(OY0, OY_B, k), u: U0 };
   }
   // the doorway fills the frame on the last frame before the cut (the cut lands on one colour, as the reference's does)
   const p = easeIn(r(t, T.push, T.plan - 1 / FPS - T.push));
   const u = U0 * Math.exp(Math.log(UP / U0) * p);
-  const sx = W / 2, sy = lerp(OY0 + DOOR[1] * U0, H / 2, p);
+  const sx = W / 2, sy = lerp(OY_B + DOOR[1] * U0, H / 2, p);
   return { ox: sx - DOOR[0] * u, oy: sy - DOOR[1] * u, u };
 }
 const S = (o, x, y) => [o.ox + x * o.u, o.oy + y * o.u];
@@ -239,9 +245,16 @@ function dimension(t, o, fade) {
   const grow = STROKE(r(t, T.circles[0], 0.6));
   if (grow <= 0 || fade <= 0) return;
   // it starts at the newest primitive's dim point (a circle's right spring point), gliding there as each one starts
-  let [ax, ay] = PRIM[0].dim;
-  for (let i = 1; i < PRIM.length; i++) { const k = MOVE(r(t, T.circles[i], 0.5)); ax = lerp(ax, PRIM[i].dim[0], k); ay = lerp(ay, PRIM[i].dim[1], k); }
+  const dimOf = (c) => (TALL && !c.path ? [c.x, c.y + c.r] : c.dim); // tall: a circle's foot
+  let [ax, ay] = dimOf(PRIM[0]);
+  for (let i = 1; i < PRIM.length; i++) { const k = MOVE(r(t, T.circles[i], 0.5)); const d = dimOf(PRIM[i]); ax = lerp(ax, d[0], k); ay = lerp(ay, d[1], k); }
   const [x0, y] = S(o, ax, ay);
+  if (TALL) { // straight down from the circles' foot to just above the line
+    const y1 = LINE_Y - lineSize() * 1.1;
+    line(x0, y + 9, x0, lerp(y + 9, y1, grow), C.lake, 2, 0.75 * fade);
+    dot(x0, lerp(y + 9, y1, grow), 4, C.lake, 0.75 * fade);
+    return;
+  }
   const x1 = COUNT_X - 34, y1 = H / 2; // and ends level with the line it points to
   line(x0 + 9, y, lerp(x0 + 9, x1, grow), lerp(y, y1, grow), C.lake, 2, 0.75 * fade);
   dot(lerp(x0 + 9, x1, grow), lerp(y, y1, grow), 4, C.lake, 0.75 * fade);
@@ -253,11 +266,11 @@ function lineSize() {
   g.save(); g.font = SANS(100, 600);
   const widest = Math.max(...LINES.map((l) => g.measureText(l.label).width));
   g.restore();
-  return Math.min(LINE_MAX, 100 * (W - 90 - COUNT_X - 70) / widest);
+  return Math.min(LINE_MAX, 100 * (TALL ? W - 200 : W - 90 - COUNT_X - 70) / widest);
 }
 function counter(t, fade, dx) {
   if (fade <= 0) return;
-  const cy = H / 2, fs = lineSize();
+  const cy = TALL ? LINE_Y : H / 2, fs = lineSize();
   // each line leaves (fading as it lifts) before the next arrives (rising into place): never two at once, never cropped
   const pos = (i) => {
     const c = LINES[i], next = LINES[i + 1];
@@ -271,8 +284,10 @@ function counter(t, fade, dx) {
     if (!q.on) return;
     g.globalAlpha = fade * q.alpha;
     const y = cy + q.y;
-    icon(ICON_CHECK, COUNT_X + fs * 0.42, y, fs * 0.84, C.ok, fs * 0.07);
-    g.font = SANS(fs, 600); g.fillStyle = C.ink; centreText(g, c.label, COUNT_X + fs * 1.1, y);
+    g.font = SANS(fs, 600);
+    const x = TALL ? W / 2 - (fs * 1.1 + g.measureText(c.label).width) / 2 : COUNT_X; // tall: the check and words centred
+    icon(ICON_CHECK, x + fs * 0.42, y, fs * 0.84, C.ok, fs * 0.07);
+    g.fillStyle = C.ink; centreText(g, c.label, x + fs * 1.1, y);
   });
   g.restore();
 }
@@ -322,11 +337,11 @@ function actPush(t) {
 function words(values) {
   const line = emph(values.line1);
   const big = kit.parseEmphasis(line)[0] || { text: '', em: false };
-  const lay = fitText(g, { text: line, fontFor: (s) => SERIF(s), maxWidth: 880, maxLines: 2, maxSize: 150, minSize: 64, lineHeight: 1.08, balance: true });
+  const lay = fitText(g, { text: line, fontFor: (s) => SERIF(s), maxWidth: TALL ? 860 : 880, maxLines: 2, maxSize: 150, minSize: 64, lineHeight: 1.08, balance: true });
   return { big, lay };
 }
 const CAP_SERIF = () => kit.capRatio(g, (s) => SERIF(s));
-function bigSize(text) { text = kit.copyText(text); return Math.min(400, kit.sizeToWidth(g, text, (s) => SERIF(s), 1500)); }
+function bigSize(text) { text = kit.copyText(text); return Math.min(400, kit.sizeToWidth(g, text, (s) => SERIF(s), TALL ? 900 : 1500)); }
 
 // where each word of the statement sits (centre of its capitals), with the block centred on cy
 function statementSlots(lay, cy) {
@@ -355,9 +370,10 @@ function actPlan(t, values, word = true) {
 // from ember to ink: an ink doorway rises over the ember field, its arch wider than the frame, and the next scene
 // is inside it (the founder, 2026-10-25: no hard cut); "Plan" rides over both, so it carries across unbroken
 function archWipe(t, keep = false) { // keep: add to the current path (to clip outside it)
-  const p = WIPE(r(t, T.wipe, T.wipeDur)), R = 0.62 * W;
-  // it ends just as the arch clears the top corners (hypot(960, 700) < R), so its settle happens on screen
-  const cy = lerp(H + R + 10, 700, p);
+  const p = WIPE(r(t, T.wipe, T.wipeDur)), R = TALL ? 0.62 * H : 0.62 * W;
+  // it ends just as the arch clears the top corners (wide hypot(960, 700) < R; tall hypot(540, 1050) < R), so its
+  // settle happens on screen
+  const cy = lerp(H + R + 10, TALL ? 1050 : 700, p);
   if (!keep) g.beginPath();
   g.moveTo(W / 2 - R, H + 20); g.lineTo(W / 2 - R, cy); g.arc(W / 2, cy, R, Math.PI, 0); g.lineTo(W / 2 + R, H + 20); g.closePath();
 }
@@ -378,12 +394,12 @@ function actWipe(t, values) {
 function corners(t) {
   const a = out5(r(t, T.corners, 0.7));
   if (a > 0) {
-    const u = 9, cx = 1830 + 420 * (1 - a), cy = 400 - 420 * (1 - a);
+    const u = TALL ? 7 : 9, cx = (TALL ? W - 60 : 1830) + 420 * (1 - a), cy = (TALL ? 470 : 400) - 420 * (1 - a);
     g.save(); g.translate(cx - 50 * u, cy - 50 * u); g.scale(u, u); g.fillStyle = C.ember; g.fill(MARK[0], 'evenodd'); g.restore();
   }
   const b = out5(r(t, T.corners + 0.12, 0.7));
   if (b > 0) {
-    const x = 250, top = 700 + 520 * (1 - b), rad = 170;
+    const x = TALL ? 150 : 250, top = (TALL ? 1500 : 700) + 520 * (1 - b), rad = TALL ? 130 : 170;
     g.save(); g.strokeStyle = LINE.text; g.lineWidth = 4; g.globalAlpha = 0.9;
     g.beginPath(); g.moveTo(x - rad, H + 10); g.lineTo(x - rad, top + rad); g.arc(x, top + rad, rad, Math.PI, 0); g.lineTo(x + rad, H + 10); g.stroke(); g.restore();
   }
@@ -400,7 +416,7 @@ const BUTTON = { h: 140, text: 56, weight: 600, pad: 64, icon: 46, gap: 22 };
 // 'grow' (the send's own disc grows into the field: it must be a disc in the mark's colour) or 'spring' (a disc of the
 // mark's colour springs up from its centre as the press returns, then grows: any other button)
 const SEND = { fill: C.ember, down: C.emberDown, icon: C.card, round: 0.5, bloom: 'grow' };
-const COMP = { cy: 700, h: 164, padL: 64, padR: 26, send: 56, text: 66 };
+const COMP = { cy: 700, h: 164, padL: 64, padR: 26, send: 56, text: 66 }; // tall: cy 1180 (sizeTo)
 function composerGeom(t, values) {
   // the words, with any *key word* kept for its colour
   const parts = kit.parseEmphasis(emph(values.line2));
@@ -607,7 +623,18 @@ function actLockup(t, values) {
 }
 
 // ============================== prepare / seek (ADAPT the fonts and defaults) ==============================
+// KEEP: the geometry for a size
+function sizeTo(size) {
+  size = SIZES[size] ? size : '16:9'; if (size === SIZE) return; SIZE = size;
+  [W, H] = SIZES[size]; TALL = H > W; canvas.width = W; canvas.height = H;
+  U0 = TALL ? 7.2 : 8.6;
+  OY_B = H / 2 - 50 * U0; OY0 = TALL ? 760 - 50 * U0 : OY_B;
+  OX_B = W / 2 - 50 * U0; OX_A = TALL ? OX_B : 600 - 50 * U0;
+  LINE_Y = TALL ? 760 + 50 * U0 + 230 : 0;
+  COMP.cy = TALL ? 1180 : 700;
+}
 async function prepare(values = {}) {
+  SIZE = null; sizeTo(values.size);
   await loadFont('Figtree', 'assets/fonts/figtree-variable.ttf', { weight: '300 900' });
   await loadFont('Newsreader', 'assets/fonts/newsreader-variable.ttf', { weight: '200 800' });
   await document.fonts.ready;
@@ -622,6 +649,7 @@ async function prepare(values = {}) {
   g.reset();
 }
 function seek(t, values = defaults()) {
+  sizeTo(values.size);
   g.reset();
   t = clamp(t, 0, DURATION - 1e-6);
   if (t < T.push) actConstruct(t);
@@ -638,6 +666,7 @@ const defaults = () => ({ size: '16:9', line1: 'Plan a *stay*', line2: 'in a sen
 // render.mjs --check runs these after its determinism check: the founder's measurable rules (critique.md). Keep them
 // when you adapt the film; if you replace a step (an input with no typing, say), change its check to match, never drop it.
 function selfChecks(values = defaults()) {
+  sizeTo(values.size);
   const res = [], add = (name, ok, detail) => res.push({ name, ok: !!ok, detail });
   const first = (t) => Math.ceil(t * FPS - 1e-9); // the first frame at or after t
   // each line beside the circles is read for at least a second (from arriving to leaving), and there are four at most
@@ -706,7 +735,7 @@ function selfChecks(values = defaults()) {
 }
 
 window.template = kit.film({
-  fps: FPS, duration: DURATION, sizes: { '16:9': [1920, 1080] }, width: W, height: H,
+  fps: FPS, duration: DURATION, sizes: SIZES, width: 1920, height: 1080,
   defaults, prepare, seek, T, selfChecks,
   fields: [
     { id: 'line1', type: 'text', label: 'The line (its first word lands alone)', maxLength: 28 },
